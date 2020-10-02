@@ -7,6 +7,9 @@
 #include <Headers/kern_version.hpp>
 #include "BrightnessKeys.hpp"
 
+#define kDeliverNotifications   "RM,deliverNotifications"
+
+UInt32 kPS2K_notifyKeystroke = iokit_vendor_specific_msg(210);     // notify of key press (data is PS2KeyInfo*)
 
 // Constants for brightness keys
 
@@ -22,7 +25,7 @@
 #define BRIGHTNESS_DOWN         0x6b
 #define BRIGHTNESS_UP           0x71
 
-#define super IOHIKeyboard
+//#define super IOHIKeyboard
 
 OSDefineMetaClassAndStructors(BrightnessKeys, super)
 
@@ -38,6 +41,11 @@ bool BrightnessKeys::init() {
     _panelNotifiers = 0;
     _panelNotifiersFallback = 0;
     _panelNotifiersDiscrete = 0;
+
+    _deliverNotification = OSSymbol::withCString(kDeliverNotifications);
+    if (!_deliverNotification)
+        return false;
+    _notificationServices = OSSet::withCapacity(1);
     return true;
 }
 
@@ -136,6 +144,35 @@ bool BrightnessKeys::start(IOService *provider) {
 
     setProperty("VersionInfo", kextVersion);
 
+    workLoop = IOWorkLoop::workLoop();
+    commandGate = IOCommandGate::commandGate(this);
+    if (!workLoop || !commandGate || (workLoop->addEventSource(commandGate) != kIOReturnSuccess)) {
+        IOLog("%s Failed to add commandGate", getName());
+        return false;
+    }
+
+    OSDictionary * propertyMatch = propertyMatching(_deliverNotification, kOSBooleanTrue);
+    if (propertyMatch) {
+        IOServiceMatchingNotificationHandler notificationHandler = OSMemberFunctionCast(IOServiceMatchingNotificationHandler, this, &BrightnessKeys::notificationHandler);
+
+      //
+      // Register notifications for availability of any IOService objects wanting to consume our message events
+      //
+      _publishNotify = addMatchingNotification(gIOFirstPublishNotification,
+                                             propertyMatch,
+                                             notificationHandler,
+                                             this,
+                                             0, 10000);
+
+      _terminateNotify = addMatchingNotification(gIOTerminatedNotification,
+                                               propertyMatch,
+                                               notificationHandler,
+                                               this,
+                                               0, 10000);
+
+      propertyMatch->release();
+    }
+
     // get IOACPIPlatformDevice for built-in panel
     getBrightnessPanel();
     
@@ -174,6 +211,17 @@ void BrightnessKeys::stop(IOService *provider) {
     OSSafeReleaseNULL(_panel);
     OSSafeReleaseNULL(_panelFallback);
     OSSafeReleaseNULL(_panelDiscrete);
+
+    _publishNotify->remove();
+    _terminateNotify->remove();
+    _notificationServices->flushCollection();
+    OSSafeReleaseNULL(_notificationServices);
+    OSSafeReleaseNULL(_deliverNotification);
+
+    workLoop->removeEventSource(commandGate);
+    OSSafeReleaseNULL(commandGate);
+    OSSafeReleaseNULL(workLoop);
+
     super::stop(provider);
 }
 
@@ -191,22 +239,28 @@ IOReturn BrightnessKeys::_panelNotification(void *target, void *refCon, UInt32 m
         }
         
         if (NULL != messageArgument) {
-            uint64_t now_abs;
+            PS2KeyInfo info;
             UInt32 arg = *static_cast<UInt32*>(messageArgument);
             switch (arg) {
                 case kIOACPIMessageBrightnessUp:
-                    clock_get_uptime(&now_abs);
-                    self->dispatchKeyboardEventX(BRIGHTNESS_UP, true, now_abs);
-                    clock_get_uptime(&now_abs);
-                    self->dispatchKeyboardEventX(BRIGHTNESS_UP, false, now_abs);
+                    info.adbKeyCode = BRIGHTNESS_UP;
+                    info.goingDown = true;
+                    clock_get_uptime(&info.time);
+                    self->dispatchMessage(kPS2K_notifyKeystroke, &info);
+                    info.goingDown = false;
+                    clock_get_uptime(&info.time);
+                    self->dispatchMessage(kPS2K_notifyKeystroke, &info);
                     DEBUG_LOG("%s %s ACPI brightness up\n", self->getName(), provider->getName());
                     break;
                     
                 case kIOACPIMessageBrightnessDown:
-                    clock_get_uptime(&now_abs);
-                    self->dispatchKeyboardEventX(BRIGHTNESS_DOWN, true, now_abs);
-                    clock_get_uptime(&now_abs);
-                    self->dispatchKeyboardEventX(BRIGHTNESS_DOWN, false, now_abs);
+                    info.adbKeyCode = BRIGHTNESS_DOWN;
+                    info.goingDown = true;
+                    clock_get_uptime(&info.time);
+                    self->dispatchMessage(kPS2K_notifyKeystroke, &info);
+                    info.goingDown = false;
+                    clock_get_uptime(&info.time);
+                    self->dispatchMessage(kPS2K_notifyKeystroke, &info);
                     DEBUG_LOG("%s %s ACPI brightness down\n", self->getName(), provider->getName());
                     break;
                     
@@ -233,45 +287,85 @@ IOReturn BrightnessKeys::_panelNotification(void *target, void *refCon, UInt32 m
     return kIOReturnSuccess;
 }
 
-UInt32 BrightnessKeys::interfaceID() { return NX_EVS_DEVICE_INTERFACE_ADB; }
-
-UInt32 BrightnessKeys::maxKeyCodes() { return NX_NUMKEYCODES; }
-
-UInt32 BrightnessKeys::deviceType() { return 3; }
-
-const unsigned char * BrightnessKeys::defaultKeymapOfLength(UInt32 * length)
+void BrightnessKeys::dispatchMessageGated(int* message, void* data)
 {
-    //
-    // Keymap data borrowed and modified from IOHIDFamily/IOHIDKeyboard.cpp
-    // references  http://www.xfree.org/current/dumpkeymap.1.html
-    //             http://www.tamasoft.co.jp/en/general-info/unicode.html
-    //
-    static const unsigned char brightnessMap[] = {
-        0x00,0x00, // use byte unit.
-        
-        // modifier definition
-        0x00,   //Number of modifier keys.
-        
-        // ADB virtual key definitions
-        0x2, // number of key definitions
-        // ( modifier mask           , generated character{char_set,char_code}...         )
-        0x00,0xfe,0x33, //6b F14
-        0x00,0xfe,0x34, //71 F15
-        
-        // key sequence definition
-        0x0, // number of of sequence definitions
-        // ( num of keys, generated sequence characters(char_set,char_code)... )
-        
-        // special key definition
-        0x2, // number of special keys
-        // ( NX_KEYTYPE,        Virtual ADB code )
-        NX_KEYTYPE_BRIGHTNESS_UP, 0x90,
-        NX_KEYTYPE_BRIGHTNESS_DOWN,    0x91,
-    };
-    
-    *length = sizeof(brightnessMap);
-    return brightnessMap;
+    OSCollectionIterator* i = OSCollectionIterator::withCollection(_notificationServices);
+
+    if (i) {
+        while (IOService* service = OSDynamicCast(IOService, i->getNextObject())) {
+            service->message(*message, this, data);
+        }
+        i->release();
+    }
 }
+
+void BrightnessKeys::dispatchMessage(int message, void* data)
+{
+    if (_notificationServices->getCount() == 0) {
+        IOLog("%s No available notification consumer", getName());
+        return;
+    }
+    commandGate->runAction(OSMemberFunctionCast(IOCommandGate::Action, this, &BrightnessKeys::dispatchMessageGated), &message, data);
+}
+
+void BrightnessKeys::notificationHandlerGated(IOService *newService, IONotifier *notifier)
+{
+    if (notifier == _publishNotify) {
+        DEBUG_LOG("Notification consumer published: %s", newService->getName());
+        _notificationServices->setObject(newService);
+    }
+
+    if (notifier == _terminateNotify) {
+        DEBUG_LOG("Notification consumer terminated: %s", newService->getName());
+        _notificationServices->removeObject(newService);
+    }
+}
+
+bool BrightnessKeys::notificationHandler(void *refCon, IOService *newService, IONotifier *notifier)
+{
+    commandGate->runAction(OSMemberFunctionCast(IOCommandGate::Action, this, &BrightnessKeys::notificationHandlerGated), newService, notifier);
+    return true;
+}
+
+//UInt32 BrightnessKeys::interfaceID() { return NX_EVS_DEVICE_INTERFACE_ADB; }
+//
+//UInt32 BrightnessKeys::maxKeyCodes() { return NX_NUMKEYCODES; }
+//
+//UInt32 BrightnessKeys::deviceType() { return 3; }
+//
+//const unsigned char * BrightnessKeys::defaultKeymapOfLength(UInt32 * length)
+//{
+//    //
+//    // Keymap data borrowed and modified from IOHIDFamily/IOHIDKeyboard.cpp
+//    // references  http://www.xfree.org/current/dumpkeymap.1.html
+//    //             http://www.tamasoft.co.jp/en/general-info/unicode.html
+//    //
+//    static const unsigned char brightnessMap[] = {
+//        0x00,0x00, // use byte unit.
+//
+//        // modifier definition
+//        0x00,   //Number of modifier keys.
+//
+//        // ADB virtual key definitions
+//        0x2, // number of key definitions
+//        // ( modifier mask           , generated character{char_set,char_code}...         )
+//        0x00,0xfe,0x33, //6b F14
+//        0x00,0xfe,0x34, //71 F15
+//
+//        // key sequence definition
+//        0x0, // number of of sequence definitions
+//        // ( num of keys, generated sequence characters(char_set,char_code)... )
+//
+//        // special key definition
+//        0x2, // number of special keys
+//        // ( NX_KEYTYPE,        Virtual ADB code )
+//        NX_KEYTYPE_BRIGHTNESS_UP, 0x90,
+//        NX_KEYTYPE_BRIGHTNESS_DOWN,    0x91,
+//    };
+//
+//    *length = sizeof(brightnessMap);
+//    return brightnessMap;
+//}
 
 
 

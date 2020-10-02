@@ -7,17 +7,13 @@
 #include <Headers/kern_version.hpp>
 #include "BrightnessKeys.hpp"
 
+bool ADDPR(debugEnabled) = false;
+uint32_t ADDPR(debugPrintDelay) = 0;
 
 // Constants for brightness keys
 
 #define kBrightnessPanel                    "BrightnessPanel"
 #define kBrightnessKey                      "BrightnessKey"
-
-#ifdef DEBUG
-#define DEBUG_LOG(args...)  do { IOLog(args); } while (0)
-#else
-#define DEBUG_LOG(args...)  do { } while (0)
-#endif
 
 #define BRIGHTNESS_DOWN         0x6b
 #define BRIGHTNESS_UP           0x71
@@ -27,6 +23,9 @@
 OSDefineMetaClassAndStructors(BrightnessKeys, super)
 
 bool BrightnessKeys::init() {
+    ADDPR(debugEnabled) = checkKernelArgument("-bkeydbg") || checkKernelArgument("-liludbgall");
+    PE_parse_boot_argn("liludelay", &ADDPR(debugPrintDelay), sizeof(ADDPR(debugPrintDelay)));
+
     if (!super::init())
         return false;
     // initialize ACPI support for brightness key
@@ -149,7 +148,7 @@ bool BrightnessKeys::start(IOService *provider) {
         _panelNotifiersDiscrete = _panelDiscrete->registerInterest(gIOGeneralInterest, _panelNotification, this);
     
     if (_panelNotifiers == NULL && _panelNotifiersFallback == NULL && _panelNotifiersDiscrete == NULL) {
-        IOLog("ps2br: unable to register any interests for GFX notifications\n");
+        SYSLOG("BKEY", "unable to register any interests for GFX notifications");
         return false;
     }
     
@@ -180,13 +179,13 @@ void BrightnessKeys::stop(IOService *provider) {
 IOReturn BrightnessKeys::_panelNotification(void *target, void *refCon, UInt32 messageType, IOService *provider, void *messageArgument, vm_size_t argSize) {
     if (messageType == kIOACPIMessageDeviceNotification) {
         if (NULL == target) {
-            DEBUG_LOG("%s kIOACPIMessageDeviceNotification target is null\n", provider->getName());
+            DBGLOG("BKEY", "%s kIOACPIMessageDeviceNotification target is null", safeString(provider->getName()));
             return kIOReturnError;
         }
         
         auto self = OSDynamicCast(BrightnessKeys, reinterpret_cast<OSMetaClassBase*>(target));
         if (NULL == self) {
-            DEBUG_LOG("%s kIOACPIMessageDeviceNotification target is not a ApplePS2Keyboard\n", provider->getName());
+            DBGLOG("BKEY", "%s kIOACPIMessageDeviceNotification target is not a ApplePS2Keyboard", safeString(provider->getName()));
             return kIOReturnError;
         }
         
@@ -199,7 +198,7 @@ IOReturn BrightnessKeys::_panelNotification(void *target, void *refCon, UInt32 m
                     self->dispatchKeyboardEventX(BRIGHTNESS_UP, true, now_abs);
                     clock_get_uptime(&now_abs);
                     self->dispatchKeyboardEventX(BRIGHTNESS_UP, false, now_abs);
-                    DEBUG_LOG("%s %s ACPI brightness up\n", self->getName(), provider->getName());
+                    DBGLOG("BKEY", "%s %s ACPI brightness up", safeString(self->getName()), safeString(provider->getName()));
                     break;
                     
                 case kIOACPIMessageBrightnessDown:
@@ -207,17 +206,17 @@ IOReturn BrightnessKeys::_panelNotification(void *target, void *refCon, UInt32 m
                     self->dispatchKeyboardEventX(BRIGHTNESS_DOWN, true, now_abs);
                     clock_get_uptime(&now_abs);
                     self->dispatchKeyboardEventX(BRIGHTNESS_DOWN, false, now_abs);
-                    DEBUG_LOG("%s %s ACPI brightness down\n", self->getName(), provider->getName());
+                    DBGLOG("BKEY", "%s %s ACPI brightness down", safeString(self->getName()), safeString(provider->getName()));
                     break;
                     
                 case kIOACPIMessageBrightnessCycle:
                 case kIOACPIMessageBrightnessZero:
                 case kIOACPIMessageBrightnessOff:
-                    DEBUG_LOG("%s %s ACPI brightness operation 0x%02x not implemented\n", self->getName(), provider->getName(), *((UInt32 *) messageArgument));
+                    DBGLOG("BKEY", "%s %s ACPI brightness operation 0x%02x not implemented", safeString(self->getName()), safeString(provider->getName()), *((UInt32 *) messageArgument));
                     return kIOReturnSuccess;
                     
                 default:
-                    DEBUG_LOG("%s %s unknown ACPI notification 0x%04x\n", self->getName(), provider->getName(), *((UInt32 *) messageArgument));
+                    DBGLOG("BKEY", "%s %s unknown ACPI notification 0x%04x", safeString(self->getName()), safeString(provider->getName()), *((UInt32 *) messageArgument));
                     return kIOReturnSuccess;
             }
             if (!self->_panelNotified) {
@@ -225,10 +224,10 @@ IOReturn BrightnessKeys::_panelNotification(void *target, void *refCon, UInt32 m
                 self->setProperty(kBrightnessPanel, safeString(provider->getName()));
             }
         } else {
-            DEBUG_LOG("%s %s received unknown kIOACPIMessageDeviceNotification\n", self->getName(), provider->getName());
+            DBGLOG("BKEY", "%s %s received unknown kIOACPIMessageDeviceNotification", safeString(self->getName()), safeString(provider->getName()));
         }
     } else {
-        DEBUG_LOG("%s received %08X\n", provider->getName(), messageType);
+        DBGLOG("BKEY", "%s received %08X", safeString(provider->getName()), messageType);
     }
     return kIOReturnSuccess;
 }

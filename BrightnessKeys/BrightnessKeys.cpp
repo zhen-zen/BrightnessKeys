@@ -93,7 +93,8 @@ void BrightnessKeys::getBrightnessPanel() {
         // _DOD method.
         //
         _panel = getAcpiDevice(getDeviceByAddress(info->videoBuiltin, kIOACPILCDPanel, kIOACPIDisplayTypeMask));
-        
+        DBGLOG("brkeys", "builtin LCD panel %s.", _panel ? _panel->getName() : "not found");
+
         //
         // On some newer laptops, address of Display Output Device (DOD)
         // may not export panel information. We can verify it by whether
@@ -106,6 +107,7 @@ void BrightnessKeys::getBrightnessPanel() {
                 _panel = getAcpiDevice(defaultPanel);
                 defaultPanel->release();
             }
+            DBGLOG("brkeys", "builtin CRT panel %s.", _panel ? _panel->getName() : "not found");
         }
         
         //
@@ -117,13 +119,20 @@ void BrightnessKeys::getBrightnessPanel() {
                 _panelFallback = getAcpiDevice(fallbackPanel);
                 fallbackPanel->release();
             }
+            DBGLOG("brkeys", "builtin fallback panel %s.", _panelFallback ? _panelFallback->getName() : "not found");
         }
+    } else {
+        DBGLOG("brkeys", "no builtin graphics present");
     }
     
-    for (size_t i = 0; i < info->videoExternal.size(); ++i)
-    if ((_panelDiscrete = getAcpiDevice(getDeviceByAddress(info->videoExternal[i].video, kIOACPILCDPanel, kIOACPIDisplayTypeMask))) ||
-        (_panelDiscrete = getAcpiDevice(getDeviceByAddress(info->videoExternal[i].video, kIOACPILegacyPanel))))
-        break;
+    for (size_t i = 0; i < info->videoExternal.size(); ++i) {
+        DBGLOG("brkeys", "evaluating external graphics %s.", info->videoExternal[i].video->getName());
+        if ((_panelDiscrete = getAcpiDevice(getDeviceByAddress(info->videoExternal[i].video, kIOACPILCDPanel, kIOACPIDisplayTypeMask))) ||
+            (_panelDiscrete = getAcpiDevice(getDeviceByAddress(info->videoExternal[i].video, kIOACPILegacyPanel)))) {
+            DBGLOG("brkeys", "external LCD/Legacy panel %s.", _panelDiscrete->getName());
+            break;
+        }
+    }
     
     DeviceInfo::deleter(info);
 }
